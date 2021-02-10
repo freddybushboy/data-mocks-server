@@ -85,6 +85,7 @@ export type Options = {
   uiPath?: string;
   modifyScenariosPath?: string;
   resetScenariosPath?: string;
+  cookieMode?: boolean;
 };
 
 export type Context = Record<string, any>;

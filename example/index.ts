@@ -82,7 +82,10 @@ run({
       {
         url: '/api/context',
         method: 'PUT',
-        response: ({ body, updateContext }) => updateContext(body),
+        response: ({ body, updateContext }) =>
+          // eslint-disable-next-line @typescript-eslint/ban-ts-ignore
+          // @ts-ignore
+          console.log('body', body) || updateContext(body),
       },
     ],
   },
@@ -159,5 +162,6 @@ run({
     uiPath: '/scenarios',
     modifyScenariosPath: '/modify',
     resetScenariosPath: '/reset',
+    cookieMode: true,
   },
 });
