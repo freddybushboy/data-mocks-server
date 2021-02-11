@@ -1,15 +1,23 @@
 import { pathToRegexp, Key } from 'path-to-regexp';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import express, { Router, Request } from 'express';
+import express, { Request, Response } from 'express';
 import nunjucks from 'nunjucks';
 import path from 'path';
 import { transform } from 'server-with-kill';
 
 import { modifyScenarios, resetScenarios } from './apis';
-import { getGraphQlMocks, applyGraphQlRoutes } from './graph-ql';
-import { getHttpMocks, applyHttpRoutes } from './http';
-import { Mock, Options, Scenarios, Default, Context, HttpMock } from './types';
+import { getGraphQlMocks } from './graph-ql';
+import { getHttpMocks } from './http';
+import {
+  Mock,
+  Options,
+  Scenarios,
+  Default,
+  Context,
+  HttpMock,
+  GraphQlMock,
+} from './types';
 import { getUi, updateUi } from './ui';
 import { createHandler } from './create-handler';
 
@@ -26,7 +34,11 @@ function run({
   options?: Options;
 }) {
   let selectedScenarios: string[] = [];
-  let router: Router;
+  let currentContext: Record<string, any> = getInitialContext2({
+    defaultMocks,
+    scenarioMocks,
+    scenarios: selectedScenarios,
+  });
   const {
     port = 3000,
     uiPath = '/',
@@ -34,8 +46,6 @@ function run({
     resetScenariosPath = '/reset-scenarios',
     cookieMode = false,
   } = options;
-
-  updateScenarios([]);
 
   const app = express();
   const scenarioNames = Object.keys(scenarioMocks);
@@ -85,17 +95,7 @@ function run({
       groupNames,
       scenarioNames,
       scenarioMocks,
-      updateScenarios: updatedScenarios => {
-        if (cookieMode) {
-          res.cookie('scenarios', JSON.stringify(updatedScenarios), {
-            encode: String,
-          });
-
-          return;
-        }
-
-        return updateScenarios(updatedScenarios);
-      },
+      updateScenarios: updateScenarios(res),
     })(req, res, next),
   );
 
@@ -103,38 +103,57 @@ function run({
     modifyScenarios({
       scenarioNames,
       scenarioMocks,
-      updateScenarios: updatedScenarios => {
-        if (cookieMode) {
-          res.cookie('scenarios', JSON.stringify(updatedScenarios), {
-            encode: String,
-          });
-
-          return;
-        }
-
-        return updateScenarios(updatedScenarios);
-      },
+      updateScenarios: updateScenarios(res),
     })(req, res, next),
   );
 
   app.put(resetScenariosPath, (req, res, next) =>
     resetScenarios({
-      updateScenarios: updatedScenarios => {
-        if (cookieMode) {
-          res.cookie('scenarios', JSON.stringify(updatedScenarios), {
-            encode: String,
-          });
-
-          return;
-        }
-
-        return updateScenarios(updatedScenarios);
-      },
+      updateScenarios: updateScenarios(res),
     })(req, res, next),
   );
 
   app.use((req, res, next) => {
-    router(req, res, next);
+    console.log('req', req.path, req.body, req.query);
+
+    router({
+      req,
+      res,
+      next,
+      getScenarios: () => {
+        if (!cookieMode) {
+          return selectedScenarios;
+        }
+
+        if (req.cookies.scenarios) {
+          return JSON.parse(req.cookies.scenarios);
+        }
+
+        return [];
+      },
+      defaultMocks,
+      scenarioMocks,
+      getContext: (initialContext: Record<string, any>) => {
+        if (!cookieMode) {
+          return currentContext;
+        }
+
+        if (req.cookies.context) {
+          return JSON.parse(req.cookies.context);
+        }
+
+        return initialContext;
+      },
+      setContext: (ctx: Record<string, any>) => {
+        if (cookieMode) {
+          res.cookie('context', JSON.stringify(ctx), {
+            encode: String,
+          });
+        } else {
+          currentContext = ctx;
+        }
+      },
+    });
   });
 
   return transform(
@@ -143,121 +162,30 @@ function run({
     }),
   );
 
-  function updateScenarios(updatedScenarios: string[]) {
-    selectedScenarios = updatedScenarios;
-    console.log('Selected scenarios', selectedScenarios);
-
-    if (cookieMode) {
-      const cookieRouter = Router();
-
-      cookieRouter.all('*', (req, res, next) => {
-        console.log('req', req.path, req.body, req.query);
-
-        const scenarios: string[] = req.cookies.scenarios
-          ? JSON.parse(req.cookies.scenarios)
-          : [];
-
-        // TODO: GraphQL implementation: graphQlMocks
-        const { httpMocks, initialContext } = getMocksAndInitialContext({
-          defaultMocks,
-          scenarioMocks,
-          scenarios,
-        });
-
-        let context: Record<string, any> = req.cookies.context
-          ? JSON.parse(req.cookies.context)
-          : initialContext;
-
-        const { httpMock, params } = getHttpMockAndParams(req, httpMocks);
-
-        if (!httpMock) {
-          // Default 404 from express
-          next();
-
-          return;
-        }
-
-        // Using router.all() so need to create params manually
-        req.params = params;
-
-        const handler = createHandler({
-          ...httpMock,
-          getContext: () => context,
-          updateContext: localUpdateContext,
-        });
-
-        handler(req, res);
-
-        function localUpdateContext(
-          partialContext: Context | ((context: Context) => Context),
-        ) {
-          context = updateContext(context, partialContext);
-
-          res.cookie('context', JSON.stringify(context), {
-            encode: String,
-          });
-
-          return context;
-        }
-      });
-
-      router = cookieRouter;
-    } else {
-      router = createRouter({
+  function updateScenarios(res: Response) {
+    return (updatedScenarios: string[]) => {
+      const context = getInitialContext2({
         defaultMocks,
         scenarioMocks,
-        scenarios: selectedScenarios,
+        scenarios: updatedScenarios,
       });
-    }
-  }
-}
 
-function createRouter({
-  defaultMocks,
-  scenarioMocks,
-  scenarios,
-}: {
-  defaultMocks: Default;
-  scenarioMocks: Scenarios;
-  scenarios: string[];
-}) {
-  const { httpMocks, graphQlMocks, initialContext } = getMocksAndInitialContext(
-    {
-      defaultMocks,
-      scenarioMocks,
-      scenarios,
-    },
-  );
+      if (cookieMode) {
+        res.cookie('context', JSON.stringify(context), {
+          encode: String,
+        });
+        res.cookie('scenarios', JSON.stringify(updatedScenarios), {
+          encode: String,
+        });
 
-  let context = initialContext;
+        return;
+      }
 
-  const router = Router();
+      currentContext = context;
+      selectedScenarios = updatedScenarios;
 
-  applyHttpRoutes({
-    router,
-    httpMocks,
-    getContext,
-    updateContext: localUpdateContext,
-  });
-  applyGraphQlRoutes({
-    router,
-    graphQlMocks,
-    getContext,
-    updateContext: localUpdateContext,
-  });
-
-  return router;
-
-  function localUpdateContext(
-    partialContext: Context | ((context: Context) => Context),
-  ) {
-    context = updateContext(context, partialContext);
-
-    return context;
-  }
-
-  function getContext() {
-    return context;
+      return updatedScenarios;
+    };
   }
 }
 
@@ -296,7 +224,7 @@ function getInitialContext(mocks: ({ context?: Context } | any[])[]) {
   return context;
 }
 
-function getMocksAndInitialContext({
+function getMocks({
   defaultMocks,
   scenarioMocks,
   scenarios,
@@ -305,16 +233,49 @@ function getMocksAndInitialContext({
   scenarioMocks: Scenarios;
   scenarios: string[];
 }) {
-  const defaultAndScenarioMocks = [defaultMocks].concat(
-    scenarios.map(scenario => scenarioMocks[scenario]),
-  );
+  const defaultAndScenarioMocks = getDefaultAndScenarioMocks({
+    defaultMocks,
+    scenarioMocks,
+    scenarios,
+  });
 
   const mocks = mergeMocks(defaultAndScenarioMocks);
   const httpMocks = getHttpMocks(mocks);
   const graphQlMocks = getGraphQlMocks(mocks);
-  const initialContext = getInitialContext(defaultAndScenarioMocks);
 
-  return { httpMocks, graphQlMocks, initialContext };
+  return { httpMocks, graphQlMocks };
+}
+
+function getDefaultAndScenarioMocks({
+  defaultMocks,
+  scenarioMocks,
+  scenarios,
+}: {
+  defaultMocks: Default;
+  scenarioMocks: Scenarios;
+  scenarios: string[];
+}) {
+  return [defaultMocks].concat(
+    scenarios.map(scenario => scenarioMocks[scenario]),
+  );
+}
+
+function getInitialContext2({
+  defaultMocks,
+  scenarioMocks,
+  scenarios,
+}: {
+  defaultMocks: Default;
+  scenarioMocks: Scenarios;
+  scenarios: string[];
+}) {
+  const defaultAndScenarioMocks = getDefaultAndScenarioMocks({
+    defaultMocks,
+    scenarioMocks,
+    scenarios,
+  });
+
+  return getInitialContext(defaultAndScenarioMocks);
 }
 
 function getHttpMockAndParams(req: Request, httpMocks: HttpMock[]) {
@@ -363,4 +324,70 @@ function getMatchAndParams(reqPath: string, mockUrl: string | RegExp) {
     match: true,
     params,
   };
+}
+
+function router({
+  req,
+  res,
+  next,
+  getScenarios,
+  defaultMocks,
+  scenarioMocks,
+  getContext,
+  setContext,
+}: any) {
+  const scenarios: string[] = getScenarios();
+
+  const { httpMocks, graphQlMocks } = getMocks({
+    defaultMocks,
+    scenarioMocks,
+    scenarios,
+  });
+  const initialContext = getInitialContext2({
+    defaultMocks,
+    scenarioMocks,
+    scenarios,
+  });
+
+  let context: Record<string, any> = getContext(initialContext);
+
+  const graphQlMock = getGraphQlMock(req, graphQlMocks);
+  const { httpMock, params } = getHttpMockAndParams(req, httpMocks);
+
+  if (graphQlMock) {
+    // TODO: GraphQL stuff
+  }
+
+  if (!httpMock) {
+    // Default 404 from express
+    next();
+
+    return;
+  }
+
+  // Using router.all() so need to create params manually
+  req.params = params;
+
+  const handler = createHandler({
+    ...httpMock,
+    getContext: () => context,
+    updateContext: localUpdateContext,
+  });
+
+  handler(req, res);
+
+  function localUpdateContext(
+    partialContext: Context | ((context: Context) => Context),
+  ) {
+    context = updateContext(context, partialContext);
+
+    setContext(context);
+
+    return context;
+  }
+}
+
+function getGraphQlMock(req: Request, graphqlMocks: GraphQlMock[]) {
+  // TODO: Needs to cope with queries vs. mutations
+  return graphqlMocks.find(graphQlMock => graphQlMock.url === req.path) || null;
 }

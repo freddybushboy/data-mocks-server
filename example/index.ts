@@ -91,6 +91,9 @@ run({
   },
   scenarios: {
     blueCheese: {
+      context: {
+        something: 'different',
+      },
       group: 'cheese',
       mocks: [
         {
@@ -162,6 +165,6 @@ run({
     uiPath: '/scenarios',
     modifyScenariosPath: '/modify',
     resetScenariosPath: '/reset',
-    cookieMode: true,
+    cookieMode: false,
   },
 });
