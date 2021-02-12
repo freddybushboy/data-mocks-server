@@ -118,8 +118,6 @@ function run({
   );
 
   app.use((req, res, next) => {
-    console.log('req', req.path, req.body, req.query);
-
     router({
       req,
       res,
