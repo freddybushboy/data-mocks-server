@@ -4,7 +4,12 @@ import gql from 'graphql-tag';
 import { createHandler } from './create-handler';
 import { GraphQlMock, Operation, Mock, UpdateContext, Context } from './types';
 
-export { getGraphQlMocks, applyGraphQlRoutes };
+export {
+  getGraphQlMocks,
+  applyGraphQlRoutes,
+  createGraphQlHandler,
+  createGraphQlRequestHandler,
+};
 
 type GraphQlHandler = (
   req: {

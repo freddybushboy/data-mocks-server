@@ -1,13 +1,17 @@
 import { pathToRegexp, Key } from 'path-to-regexp';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import nunjucks from 'nunjucks';
 import path from 'path';
 import { transform } from 'server-with-kill';
 
 import { modifyScenarios, resetScenarios } from './apis';
-import { getGraphQlMocks } from './graph-ql';
+import {
+  getGraphQlMocks,
+  createGraphQlHandler,
+  createGraphQlRequestHandler,
+} from './graph-ql';
 import { getHttpMocks } from './http';
 import {
   Mock,
@@ -335,7 +339,16 @@ function router({
   scenarioMocks,
   getContext,
   setContext,
-}: any) {
+}: {
+  req: Request;
+  res: Response;
+  next: NextFunction;
+  getScenarios: () => string[];
+  defaultMocks: Default;
+  scenarioMocks: Scenarios;
+  getContext: (initialContext: Context) => Context;
+  setContext: (context: Context) => void;
+}) {
   const scenarios: string[] = getScenarios();
 
   const { httpMocks, graphQlMocks } = getMocks({
@@ -355,7 +368,41 @@ function router({
   const { httpMock, params } = getHttpMockAndParams(req, httpMocks);
 
   if (graphQlMock) {
-    // TODO: GraphQL stuff
+    const queries = graphQlMock.operations
+      .filter(({ type }) => type === 'query')
+      .map(operation =>
+        createGraphQlHandler({
+          ...operation,
+          updateContext: localUpdateContext,
+          getContext: () => context,
+        }),
+      );
+
+    if (req.method === 'GET') {
+      const handler = createGraphQlRequestHandler(queries);
+      handler(req, res, next);
+      return;
+    }
+
+    if (req.method === 'POST') {
+      const mutations = graphQlMock.operations
+        .filter(({ type }) => type === 'mutation')
+        .map(operation =>
+          createGraphQlHandler({
+            ...operation,
+            updateContext: localUpdateContext,
+            getContext: () => context,
+          }),
+        );
+      const handler = createGraphQlRequestHandler(queries.concat(mutations));
+      handler(req, res, next);
+      return;
+    }
+
+    // req.method doesn't make sense for GraphQL - default 404 from express
+    next();
+
+    return;
   }
 
   if (!httpMock) {
@@ -388,6 +435,5 @@ function router({
 }
 
 function getGraphQlMock(req: Request, graphqlMocks: GraphQlMock[]) {
-  // TODO: Needs to cope with queries vs. mutations
   return graphqlMocks.find(graphQlMock => graphQlMock.url === req.path) || null;
 }
